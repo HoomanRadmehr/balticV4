@@ -69,23 +69,6 @@ contract Baltic is Ownable {
         lastPrice = fetchPrice();
     }
 
-    function tokenApprove(address _tokenAddress,address allowanceTo) internal {
-        (bool success,) = _tokenAddress.delegatecall(
-            abi.encodeWithSignature("approve(address,uint256)",allowanceTo,type(uint256).max)
-        );
-        require(success,"failed to approve token");
-    }
-
-    function approveTokens() public {
-        tokenApprove(address(WBTC), address(router));
-        tokenApprove(address(WETH), address(router));
-        tokenApprove(address(WMATIC), address(this));
-        tokenApprove(address(alternativeToken), address(this));
-        IsApproved[msg.sender]=true;
-    }
-
-
-
     function payReg() external{
         require(!users[msg.sender].isActive, "Already registered");
         require(IsApproved[msg.sender],"you should approved tokens first");
@@ -135,7 +118,7 @@ contract Baltic is Ownable {
         // Perform the swap using Uniswap V3 Router via delegate call
         (bool success, ) = address(router).delegatecall(
             abi.encodeWithSignature(
-                "swapExactInputSingle(address,address,uint24,address,uint256,uint256,uint256,uint160)",
+                "exactInputSingle(address,address,uint24,address,uint256,uint256,uint256,uint160)",
                 token0,
                 token1,
                 500,
