@@ -140,7 +140,6 @@ contract Baltic is Ownable {
             uint256 currentPrice = fetchPrice();
             uint256 userLastPrice = thisUser.lastTradePrice;
             uint256 priceChange = userLastPrice > currentPrice ? userLastPrice - currentPrice : currentPrice - userLastPrice;
-            uint256 priceChangeInWbtc = priceChange.mul(10**WETH.decimals()).div(userLastPrice);
             uint256 timeElapsed = block.timestamp - thisUser.registrationTime;
             if (timeElapsed >= 3 * 30 days) {
                 if (!reRegister(userAddress)) {
@@ -150,12 +149,12 @@ contract Baltic is Ownable {
             }
 
             if (currentPrice > userLastPrice) {
-                uint256 tradeAmount = thisUser.initialWbtcBalance.mul(tradingLeverage).mul(priceChangeInWbtc).div(10**WETH.decimals());
+                uint256 tradeAmount = thisUser.initialWbtcBalance.mul(tradingLeverage).mul(priceChange).div(currentPrice);
                 WBTC.transferFrom(userAddress,address(this), tradeAmount);
                 WBTC.approve(address(router),tradeAmount);
                 executeSwap(WBTC, WETH, userAddress, tradeAmount);
             } else if (currentPrice < userLastPrice) {
-                uint256 tradeAmount = thisUser.initialWbtcBalance.mul(tradingLeverage).div(priceChangeInWbtc).div(10**WETH.decimals());
+                uint256 tradeAmount = thisUser.initialWbtcBalance.mul(tradingLeverage).mul(priceChange);
                 WETH.transferFrom(userAddress, address(this),tradeAmount);
                 WETH.approve(address(router),tradeAmount);
                 executeSwap(WETH, WBTC, userAddress, tradeAmount);
