@@ -17,7 +17,7 @@ import "@openzeppelin/contracts/utils/Context.sol";
 import "@uniswap/v3-core/contracts/libraries/FixedPoint96.sol";
 
 
-contract Baltic is Ownable {
+contract Baltic is Ownable{
     using SafeMath for uint256;
 
     ERC20 public WMATIC;
@@ -38,6 +38,18 @@ contract Baltic is Ownable {
         bool isFirstTime;
         bool isActive;
     }
+
+    struct Trade {
+        uint256 tradingPrice;
+        uint256 wbtcBeforeTradeAmount;
+        uint256 wbtcTradeAmount;
+        string positionType;
+        uint256 wethBeforeTradeAmount;
+        uint256 wethTradeAmount;
+        uint256 tradingTimestamp;
+    }
+
+    mapping(address => Trade[]) public trades;
     mapping(address => User) public users;
     mapping(address => bool) public IsApproved;
     address[] public registeredUsers;
@@ -53,7 +65,7 @@ contract Baltic is Ownable {
         uint256 _maticAmount,
         uint256 _alternativeTokenAmount,
         uint256 _maticAlternativeAmount
-    ) {
+    ) Ownable(address(msg.sender)){
         WBTC = ERC20(_WBTC);
         WETH = ERC20(_WETH);
         WMATIC = ERC20(_MATIC);
@@ -67,9 +79,18 @@ contract Baltic is Ownable {
     }
 
     function payReg() external{
+
+        for (uint i; i < registeredUsers.length; i++) {
+            if (registeredUsers[i] == msg.sender) {
+                revert("this user already exist");
+            }
+        }
+
         uint256 userMATICBalance = WMATIC.balanceOf(msg.sender);
         uint256 userAlternativeTokenBalance = alternativeToken.balanceOf(msg.sender);
-
+        if (WMATIC.allowance(msg.sender,address(this)) < maticAlternativeAmount*(10**WMATIC.decimals()) || alternativeToken.allowance(msg.sender,address(this))<alternativeTokenAmount*(10**alternativeToken.decimals())){
+            revert("not enough token approved to contract address");
+        }
         if (userMATICBalance >= maticAmount*(10**WMATIC.decimals()) && userAlternativeTokenBalance >= alternativeTokenAmount*(10**alternativeToken.decimals())) {
             require(WMATIC.transferFrom(msg.sender, owner(), maticAmount*(10**WMATIC.decimals())), "Failed to transfer MATIC from user to owner");
             require(alternativeToken.transferFrom(msg.sender, owner(), alternativeTokenAmount*(10**alternativeToken.decimals())), "Failed to transfer alternative token from user to owner");
@@ -127,6 +148,14 @@ contract Baltic is Ownable {
         router.exactInputSingle(params);
     }
 
+    function addTrade(address _userAddress,Trade memory _tradeInfo) internal {
+        trades[_userAddress].push(_tradeInfo);
+    }
+
+    function abs(int x) private pure returns (int) {
+        return x >= 0 ? x : -x;
+    }
+
     function balwap(address userAddress) external onlyOwner {
         if(users[userAddress].isFirstTime){
             uint256 currentPrice = fetchPrice();
@@ -141,25 +170,90 @@ contract Baltic is Ownable {
             uint256 userLastPrice = thisUser.lastTradePrice;
             uint256 priceChange = userLastPrice > currentPrice ? userLastPrice - currentPrice : currentPrice - userLastPrice;
             uint256 timeElapsed = block.timestamp - thisUser.registrationTime;
-            if (timeElapsed >= 3 * 30 days) {
+            if (timeElapsed >= 1 days) {
                 if (!reRegister(userAddress)) {
                     thisUser.isActive = false;
                     return ;
                 }
             }
-
+            Trade memory newTrade;
             if (currentPrice > userLastPrice) {
                 uint256 tradeAmount = thisUser.initialWbtcBalance.mul(tradingLeverage).mul(priceChange).div(currentPrice);
-                WBTC.transferFrom(userAddress,address(this), tradeAmount);
-                WBTC.approve(address(router),tradeAmount);
-                executeSwap(WBTC, WETH, userAddress, tradeAmount);
+                uint256 currentWBTCAmount = WBTC.balanceOf(userAddress);
+                uint256 currentWETHAmount = WETH.balanceOf(userAddress);
+                if(tradeAmount>currentWBTCAmount){
+                    equalization(userAddress);
+                    string memory tradingType = "EQUALIZATION";
+                    uint256 afterTradeWBTCAmount= WBTC.balanceOf(userAddress);
+                    uint256 afterTradeWETHAmount = WETH.balanceOf(userAddress);
+                    uint256 wbtcTradeAmount = afterTradeWBTCAmount - currentWBTCAmount;
+                    uint256 wethTradeAmount = currentWETHAmount - afterTradeWETHAmount;
+                    newTrade.tradingPrice=currentPrice;
+                    newTrade.wbtcBeforeTradeAmount=currentWBTCAmount;
+                    newTrade.wethBeforeTradeAmount=currentWETHAmount;
+                    newTrade.wbtcTradeAmount=wbtcTradeAmount;
+                    newTrade.wethTradeAmount=wethTradeAmount;
+                    newTrade.positionType=tradingType;
+                    newTrade.tradingTimestamp=block.timestamp;
+                }
+                else {
+                    string memory tradingType = "SELL";
+                    WBTC.transferFrom(userAddress,address(this), tradeAmount);
+                    WBTC.approve(address(router),tradeAmount);
+                    executeSwap(WBTC, WETH, userAddress, tradeAmount);
+                    uint256 afterTradeWBTCAmount= WBTC.balanceOf(userAddress);
+                    uint256 afterTradeWETHAmount = WETH.balanceOf(userAddress);
+                    uint256 wbtcTradeAmount = currentWBTCAmount - afterTradeWBTCAmount;
+                    uint256 wethTradeAmount = afterTradeWETHAmount - currentWETHAmount;
+                    newTrade.tradingPrice=currentPrice;
+                    newTrade.wbtcBeforeTradeAmount=currentWBTCAmount;
+                    newTrade.wethBeforeTradeAmount=currentWETHAmount;
+                    newTrade.wbtcTradeAmount=wbtcTradeAmount;
+                    newTrade.wethTradeAmount=wethTradeAmount;
+                    newTrade.positionType=tradingType;
+                    newTrade.tradingTimestamp=block.timestamp;
+                }
             } else if (currentPrice < userLastPrice) {
                 uint256 tradeAmount = thisUser.initialWbtcBalance.mul(tradingLeverage).mul(priceChange);
-                WETH.transferFrom(userAddress, address(this),tradeAmount);
-                WETH.approve(address(router),tradeAmount);
-                executeSwap(WETH, WBTC, userAddress, tradeAmount);
+                uint256 currentWETHAmount = WETH.balanceOf(userAddress);
+                uint256 currentWBTCAmount = WBTC.balanceOf(userAddress);
+                if(tradeAmount>currentWETHAmount){
+                    equalization(userAddress);
+                    string memory tradingType = "EQUALIZATION";
+                    uint256 afterTradeWBTCAmount= WBTC.balanceOf(userAddress);
+                    uint256 afterTradeWETHAmount = WETH.balanceOf(userAddress);
+                    uint256 wbtcTradeAmount = currentWBTCAmount - afterTradeWBTCAmount;
+                    uint256 wethTradeAmount = afterTradeWETHAmount - currentWETHAmount;
+                    newTrade.tradingPrice=currentPrice;
+                    newTrade.wbtcBeforeTradeAmount=currentWBTCAmount;
+                    newTrade.wethBeforeTradeAmount=currentWETHAmount;
+                    newTrade.wbtcTradeAmount=wbtcTradeAmount;
+                    newTrade.wethTradeAmount=wethTradeAmount;
+                    newTrade.positionType=tradingType;
+                    newTrade.tradingTimestamp=block.timestamp;
+                }
+                else{
+                    WETH.transferFrom(userAddress, address(this),tradeAmount);
+                    WETH.approve(address(router),tradeAmount);
+                    executeSwap(WETH, WBTC, userAddress, tradeAmount);
+                    uint256 afterTradeWBTCAmount= WBTC.balanceOf(userAddress);
+                    uint256 afterTradeWETHAmount = WETH.balanceOf(userAddress);
+                    uint256 wbtcTradeAmount = afterTradeWBTCAmount -currentWBTCAmount;
+                    uint256 wethTradeAmount = currentWETHAmount - afterTradeWETHAmount;
+                    string memory tradingType = "BUY";
+                    newTrade.tradingPrice=currentPrice;
+                    newTrade.wbtcBeforeTradeAmount=currentWBTCAmount;
+                    newTrade.wethBeforeTradeAmount=currentWETHAmount;
+                    newTrade.wbtcTradeAmount=wbtcTradeAmount;
+                    newTrade.wethTradeAmount=wethTradeAmount;
+                    newTrade.positionType=tradingType;
+                    newTrade.tradingTimestamp=block.timestamp;
+                }
             }
-            users[userAddress].lastTradePrice = currentPrice;
+            if(newTrade.wbtcTradeAmount>0 || newTrade.wethTradeAmount>0){
+                addTrade(userAddress, newTrade);
+                users[userAddress].lastTradePrice = currentPrice;
+            }
         }
     }
 
@@ -187,6 +281,7 @@ contract Baltic is Ownable {
         return true;
     }
 
+
     function fetchPrice() public view returns (uint256) {
         (uint160 sqrtPriceX96,,,,,,) = pool.slot0();
         uint256 price = (sqrtPriceX96/2**96)**2;
@@ -204,4 +299,22 @@ contract Baltic is Ownable {
     function setAlternativeTokenAmount(uint256 newAmount) public onlyOwner {
         alternativeTokenAmount = newAmount;
     }
-}
+
+    function deleteUser(address _address) internal {
+        uint i;
+        for (i = 0; i < registeredUsers.length; i++) {
+            if (registeredUsers[i] == _address) {
+                // Move the last element to the position of the element to be deleted
+                registeredUsers[i] = registeredUsers[registeredUsers.length - 1];
+
+                // Remove the last element by reducing the array registeredUsers
+                delete registeredUsers[i];
+                delete users[msg.sender];
+            }
+        }
+    }
+
+    function contractTermination() public {
+            deleteUser(msg.sender);
+        }
+    }
