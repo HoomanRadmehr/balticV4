@@ -152,6 +152,16 @@ contract Baltic is Ownable{
         trades[_userAddress].push(_tradeInfo);
     }
 
+    function getTradesReverse(address _userAddress) external view returns (Trade[] memory) {
+        uint256 tradeCount = trades[_userAddress].length;
+        Trade[] memory reversedTrades = new Trade[](tradeCount);
+
+        for (uint256 i = 0; i < tradeCount; i++) {
+            reversedTrades[i] = trades[_userAddress][tradeCount - 1 - i];
+        }
+        return reversedTrades;
+    }
+    
     function abs(int x) private pure returns (int) {
         return x >= 0 ? x : -x;
     }
